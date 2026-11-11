@@ -19,23 +19,32 @@
  * buffer
  */
 UNIFEX_TERM create(UnifexEnv *env) {
+  UNIFEX_TERM res;
   State *state = unifex_alloc_state(env);
+  // unifex_alloc_state does not zero the state and handle_destroy_state runs
+  // on every error path below, so the fields it frees must be initialised.
+  state->handle = NULL;
+  state->decoder_buffer = NULL;
 
   state->handle = aacDecoder_Open(TT_MP4_ADTS, 1);
 
   if (!state->handle) {
     MEMBRANE_WARN(env, "AAC: Could not initialize decoder\n");
-    return create_result_error_unknown(env);
+    res = create_result_error_unknown(env);
+    goto exit_create;
   }
 
   state->decoder_buffer_size = DECODER_BUFFSIZE * DECODER_MAX_CHANNELS;
   state->decoder_buffer = unifex_alloc(state->decoder_buffer_size);
 
   if (!state->decoder_buffer) {
-    return create_result_error_no_memory(env);
+    res = create_result_error_no_memory(env);
+    goto exit_create;
   }
 
-  UNIFEX_TERM res = create_result_ok(env, state);
+  res = create_result_ok(env, state);
+
+exit_create:
   unifex_release_state(env, state);
   return res;
 }
@@ -148,5 +157,7 @@ void handle_destroy_state(UnifexEnv *env, State *state) {
   if (state->handle) {
     aacDecoder_Close(state->handle);
   }
-  unifex_free(state->decoder_buffer);
+  if (state->decoder_buffer) {
+    unifex_free(state->decoder_buffer);
+  }
 }

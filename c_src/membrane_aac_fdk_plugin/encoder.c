@@ -64,7 +64,12 @@ char *get_error_message(AACENC_ERROR err) {
 UNIFEX_TERM create(
     UnifexEnv *env, int channels, int sample_rate, int aot, int bitrate_mode, int bitrate
 ) {
+  UNIFEX_TERM res;
   State *state = unifex_alloc_state(env);
+  // unifex_alloc_state does not zero the state and handle_destroy_state runs
+  // on every error path below, so the fields it frees must be initialised.
+  state->handle = NULL;
+  state->aac_buffer = NULL;
   state->channels = channels;
 
   AACENC_ERROR err;
@@ -77,28 +82,32 @@ UNIFEX_TERM create(
   err = aacEncOpen(&state->handle, 0, channels);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Could not initialize encoder: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   // Set Audio Object Type
   err = aacEncoder_SetParam(state->handle, AACENC_AOT, aot);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to set the AOT: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   // Set sample rate
   err = aacEncoder_SetParam(state->handle, AACENC_SAMPLERATE, sample_rate);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to set sample rate: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   // Set transport type
   err = aacEncoder_SetParam(state->handle, AACENC_TRANSMUX, TT_MP4_ADTS);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to set transport type: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   // Set channels configuration
@@ -145,18 +154,21 @@ UNIFEX_TERM create(
     break;
   default:
     MEMBRANE_WARN(env, "AAC: Unsupported number of channels: %d", channels);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
   err = aacEncoder_SetParam(state->handle, AACENC_CHANNELMODE, channel_mode);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to set channel mode %d: %x\n", channel_mode, err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   err = aacEncoder_SetParam(state->handle, AACENC_CHANNELORDER, 1);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to set channel order: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
   // Set bitrate
@@ -166,12 +178,14 @@ UNIFEX_TERM create(
       MEMBRANE_WARN(
           env, "AAC: Unable to set VBR mode: %d. VBR quality should be 1-5\n", bitrate_mode
       );
-      return create_result_error(env, "invalid_vbr");
+      res = create_result_error(env, "invalid_vbr");
+      goto exit_create;
     }
     err = aacEncoder_SetParam(state->handle, AACENC_BITRATEMODE, bitrate_mode);
     if (err != AACENC_OK) {
       MEMBRANE_WARN(env, "AAC: Unable to set VBR %d: %x\n", bitrate_mode, err);
-      return create_result_error(env, get_error_message(err));
+      res = create_result_error(env, get_error_message(err));
+      goto exit_create;
     }
   } else {
     // CBR
@@ -188,24 +202,29 @@ UNIFEX_TERM create(
     err = aacEncoder_SetParam(state->handle, AACENC_BITRATE, bitrate);
     if (err != AACENC_OK) {
       MEMBRANE_WARN(env, "AAC: Unable to set bitrate: %x\n", err);
-      return create_result_error(env, get_error_message(err));
+      res = create_result_error(env, get_error_message(err));
+      goto exit_create;
     }
   }
 
   state->aac_buffer = unifex_alloc(MAX_AAC_BUFFER_SIZE);
   if (!state->aac_buffer) {
     MEMBRANE_WARN(env, "AAC: Unable to initialize AAC buffer\n");
-    return create_result_error(env, "no_memory");
+    res = create_result_error(env, "no_memory");
+    goto exit_create;
   }
 
   // Initialize the encoder with preset parameters
   err = aacEncEncode(state->handle, NULL, NULL, NULL, NULL);
   if (err != AACENC_OK) {
     MEMBRANE_WARN(env, "AAC: Unable to initialize the encoder: %x\n", err);
-    return create_result_error(env, get_error_message(err));
+    res = create_result_error(env, get_error_message(err));
+    goto exit_create;
   }
 
-  UNIFEX_TERM res = create_result_ok(env, state);
+  res = create_result_ok(env, state);
+
+exit_create:
   unifex_release_state(env, state);
   return res;
 }
@@ -305,5 +324,7 @@ void handle_destroy_state(UnifexEnv *env, State *state) {
   if (state->handle) {
     aacEncClose(&state->handle);
   }
-  unifex_free(state->aac_buffer);
+  if (state->aac_buffer) {
+    unifex_free(state->aac_buffer);
+  }
 }
